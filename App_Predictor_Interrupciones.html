@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Predictor de Interrupciones en Deep Work (Poisson)</title>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: #1e293b;
+            --accent-green: #10b981;
+            --accent-yellow: #f59e0b;
+            --accent-red: #ef4444;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --border-color: #334155;
+        }
+
+        * { box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { background-color: var(--bg-color); color: var(--text-main); margin: 0; padding: 20px; }
+        
+        .container { max-width: 1100px; margin: 0 auto; }
+        header { text-align: center; margin-bottom: 25px; }
+        header h1 { margin: 0 0 5px 0; font-size: 1.8rem; color: var(--accent-green); }
+        header p { color: var(--text-muted); margin: 0; font-size: 0.95rem; }
+
+        .dashboard { display: grid; grid-template-columns: 360px 1fr; gap: 20px; }
+        @media (max-width: 768px) { .dashboard { grid-template-columns: 1fr; } }
+
+        .panel { background-color: var(--card-bg); border-radius: 12px; padding: 20px; border: 1px solid var(--border-color); }
+        
+        .form-group { margin-bottom: 18px; }
+        label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 6px; color: var(--text-muted); }
+        select, input[type="range"] { width: 100%; background: #0f172a; border: 1px solid var(--border-color); color: white; padding: 8px 12px; border-radius: 6px; }
+
+        .toggle-group { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; font-size: 0.85rem; }
+        .toggle-group input { cursor: pointer; }
+
+        .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 20px; }
+        .kpi-card { background: #0f172a; padding: 15px; border-radius: 8px; border: 1px solid var(--border-color); text-align: center; }
+        .kpi-val { font-size: 1.5rem; font-weight: bold; margin-top: 5px; color: var(--accent-green); }
+        .kpi-label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; }
+
+        .chart-container { margin-top: 15px; }
+        .bar-row { display: flex; align-items: center; margin-bottom: 10px; font-size: 0.85rem; }
+        .bar-label { width: 110px; color: var(--text-muted); }
+        .bar-track { flex-grow: 1; background: #0f172a; height: 22px; border-radius: 4px; overflow: hidden; margin: 0 10px; }
+        .bar-fill { height: 100%; background: var(--accent-green); transition: width 0.3s ease; }
+        .bar-pct { width: 50px; text-align: right; font-weight: bold; }
+
+        .time-breakdown { background: #0f172a; border-radius: 8px; padding: 15px; margin-top: 20px; }
+        .progress-bar { display: flex; height: 16px; border-radius: 8px; overflow: hidden; margin-top: 10px; }
+        .seg-focus { background: var(--accent-green); }
+        .seg-lost { background: var(--accent-red); }
+
+        .recommendation { margin-top: 15px; padding: 12px; background: rgba(16, 185, 129, 0.1); border-left: 4px solid var(--accent-green); border-radius: 4px; font-size: 0.85rem; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <h1>Predictor de Interrupciones en Bloques de Trabajo</h1>
+        <p>Estimación probabilística de flujo continuo (Modelo Poisson)</p>
+    </header>
+
+    <div class="dashboard">
+        <!-- CONTROLES E INPUTS -->
+        <div class="panel">
+            <h3 style="margin-top:0; font-size: 1.1rem;">Configuración de Sesión</h3>
+            
+            <div class="form-group">
+                <label>Duración del Bloque: <span id="val-duration" style="color:var(--accent-green);">60 min</span></label>
+                <input type="range" id="duration" min="15" max="120" step="15" value="60">
+            </div>
+
+            <div class="form-group">
+                <label>Entorno de Trabajo</label>
+                <select id="environment">
+                    <option value="0.8">Espacio Privado / Casa solo (Bajo ruidos)</option>
+                    <option value="1.8" selected>Remoto Compartido (Casa con familia/roomies)</option>
+                    <option value="3.5">Oficina Abierta / Coworking (Alta fricción)</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label>Complejidad de la Tarea</label>
+                <select id="complexity">
+                    <option value="low">Rutinaria (Reconexión: ~3 min)</option>
+                    <option value="medium" selected>Análisis / Reportes (Reconexión: ~8 min)</option>
+                    <option value="high">Código / Redacción Profunda (Reconexión: ~15 min)</option>
+                </select>
+            </div>
+
+            <hr style="border-color: var(--border-color); margin: 20px 0;">
+            <label style="margin-bottom: 10px;">Fricciones y Distractores Activos</label>
+
+            <div class="toggle-group">
+                <span>Slack / Teams Abierto (+1.2 int/h)</span>
+                <input type="checkbox" id="slack" checked>
+            </div>
+            <div class="toggle-group">
+                <span>Notificaciones Celular (+0.8 int/h)</span>
+                <input type="checkbox" id="phone" checked>
+            </div>
+            <div class="toggle-group">
+                <span>Modo "No Molestar" (-0.6 int/h)</span>
+                <input type="checkbox" id="dnd">
+            </div>
+            <div class="toggle-group">
+                <span>Aviso Previo / Calendario (-0.4 int/h)</span>
+                <input type="checkbox" id="notice">
+            </div>
+        </div>
+
+        <!-- RESULTADOS Y DASHBOARD -->
+        <div class="panel">
+            <div class="kpi-grid">
+                <div class="kpi-card">
+                    <div class="kpi-label">Foco Total P(k=0)</div>
+                    <div class="kpi-val" id="kpi-p0">0%</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">Interrupciones (λ)</div>
+                    <div class="kpi-val" id="kpi-lambda" style="color:var(--text-main);">0</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">Foco Efectivo</div>
+                    <div class="kpi-val" id="kpi-effective">0 min</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-label">Tiempo Perdido</div>
+                    <div class="kpi-val" id="kpi-lost" style="color:var(--accent-red);">0 min</div>
+                </div>
+            </div>
+
+            <h4 style="margin: 0 0 10px 0;">Distribución de Probabilidad (Cortes Estimados k)</h4>
+            <div class="chart-container" id="chart"></div>
+
+            <div class="time-breakdown">
+                <div style="display:flex; justify-content:space-between; font-size:0.8rem; color:var(--text-muted);">
+                    <span>🟩 Foco Neto: <b id="lbl-focus">0m</b></span>
+                    <span>🟥 Distracción + Reconexión: <b id="lbl-lost">0m</b></span>
+                </div>
+                <div class="progress-bar">
+                    <div class="seg-focus" id="bar-focus" style="width: 50%;"></div>
+                    <div class="seg-lost" id="bar-lost" style="width: 50%;"></div>
+                </div>
+            </div>
+
+            <div class="recommendation" id="recommendation">
+                Cargando recomendaciones...
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    function factorial(n) {
+        if (n <= 1) return 1;
+        let res = 1;
+        for (let i = 2; i <= n; i++) res *= i;
+        return res;
+    }
+
+    function calculate() {
+        const duration = parseFloat(document.getElementById('duration').value);
+        const envBase = parseFloat(document.getElementById('environment').value);
+        const complexity = document.getElementById('complexity').value;
+
+        const slack = document.getElementById('slack').checked ? 1.2 : 0;
+        const phone = document.getElementById('phone').checked ? 0.8 : 0;
+        const dnd = document.getElementById('dnd').checked ? -0.6 : 0;
+        const notice = document.getElementById('notice').checked ? -0.4 : 0;
+
+        let reconTime = 8;
+        let avgDistraction = 3;
+        if (complexity === 'low') { reconTime = 3; avgDistraction = 2; }
+        else if (complexity === 'high') { reconTime = 15; avgDistraction = 5; }
+
+        let hourlyLambda = envBase + slack + phone + dnd + notice;
+        if (hourlyLambda < 0.1) hourlyLambda = 0.1; // límite inferior práctico
+
+        let lambda = hourlyLambda * (duration / 60);
+
+        // Probabilidades de Poisson para k = 0..5+
+        let probs = [];
+        let p0 = Math.exp(-lambda);
+        probs.push(p0);
+
+        let sumP = p0;
+        for (let k = 1; k <= 4; k++) {
+            let p = (Math.pow(lambda, k) * Math.exp(-lambda)) / factorial(k);
+            probs.push(p);
+            sumP += p;
+        }
+        probs.push(Math.max(0, 1 - sumP)); // k = 5 o más
+
+        // Tiempo perdido
+        let timeLostPerEvent = avgDistraction + reconTime;
+        let totalLostTime = lambda * timeLostPerEvent;
+        let effectiveTime = Math.max(0, duration - totalLostTime);
+
+        // Actualizar UI
+        document.getElementById('val-duration').innerText = duration + ' min';
+        document.getElementById('kpi-p0').innerText = (p0 * 100).toFixed(1) + '%';
+        document.getElementById('kpi-lambda').innerText = lambda.toFixed(2);
+        document.getElementById('kpi-effective').innerText = Math.round(effectiveTime) + ' min';
+        document.getElementById('kpi-lost').innerText = Math.round(totalLostTime) + ' min';
+
+        // Color KPI P0 según riesgo
+        const p0Elem = document.getElementById('kpi-p0');
+        if (p0 > 0.6) p0Elem.style.color = "var(--accent-green)";
+        else if (p0 > 0.3) p0Elem.style.color = "var(--accent-yellow)";
+        else p0Elem.style.color = "var(--accent-red)";
+
+        // Dibujar gráfico de barras
+        const chartElem = document.getElementById('chart');
+        chartElem.innerHTML = '';
+        const labels = ['0 cortes', '1 corte', '2 cortes', '3 cortes', '4 cortes', '5+ cortes'];
+
+        probs.forEach((p, idx) => {
+            const pct = (p * 100).toFixed(1);
+            const row = document.createElement('div');
+            row.className = 'bar-row';
+            row.innerHTML = `
+                <div class="bar-label">${labels[idx]}</div>
+                <div class="bar-track">
+                    <div class="bar-fill" style="width: ${pct}%; background: ${idx === 0 ? 'var(--accent-green)' : 'var(--border-color)'};"></div>
+                </div>
+                <div class="bar-pct">${pct}%</div>
+            `;
+            chartElem.appendChild(row);
+        });
+
+        // Barra de progreso
+        const focusPct = Math.max(0, (effectiveTime / duration) * 100);
+        const lostPct = 100 - focusPct;
+        document.getElementById('bar-focus').style.width = focusPct + '%';
+        document.getElementById('bar-lost').style.width = lostPct + '%';
+        document.getElementById('lbl-focus').innerText = Math.round(effectiveTime) + 'm (' + Math.round(focusPct) + '%)';
+        document.getElementById('lbl-lost').innerText = Math.round(totalLostTime) + 'm (' + Math.round(lostPct) + '%)';
+
+        // Recomendación Dinámica
+        const recElem = document.getElementById('recommendation');
+        if (slack > 0) {
+            recElem.innerHTML = "💡 <b>Sugerencia de alto impacto:</b> Cerrar Slack/Teams reduce tu tasa de interrupción en ~1.2 eventos/hora, devolviéndote aproximadamente <b>" + Math.round(1.2 * (duration/60) * timeLostPerEvent) + " minutos de foco</b> en esta sesión.";
+        } else if (!document.getElementById('dnd').checked) {
+            recElem.innerHTML = "💡 <b>Sugerencia:</b> Activa el modo 'No Molestar' para elevar tu probabilidad de foco continuo en +" + Math.round((Math.exp(-(lambda - 0.6*(duration/60))) - p0)*100) + "%.";
+        } else {
+            recElem.innerHTML = "🚀 <b>Excelente configuración:</b> Tienes un entorno altamente blindado para trabajo profundo.";
+        }
+    }
+
+    // Event Listeners
+    document.querySelectorAll('input, select').forEach(elem => {
+        elem.addEventListener('input', calculate);
+    });
+
+    calculate();
+</script>
+
+</body>
+</html>
